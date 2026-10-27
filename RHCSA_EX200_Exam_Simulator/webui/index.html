@@ -60,6 +60,44 @@
             color: #ffc107;
         }
 
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .version-badge {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.12);
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 6px;
+            padding: 4px 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+            line-height: 1.2;
+            font-family: inherit;
+        }
+
+        .version-badge:hover {
+            background: rgba(255, 255, 255, 0.22);
+        }
+
+        .version-badge-label {
+            font-size: 0.65em;
+            color: rgba(255, 255, 255, 0.75);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .version-badge-value {
+            font-size: 0.85em;
+            color: #fff;
+            font-weight: bold;
+            font-family: monospace;
+        }
+
         /* Main Container */
         .main-container {
             display: flex;
@@ -511,6 +549,14 @@
         }
         .btn-back.success:hover { background-color: #218838; }
 
+        /* Non-lab (plain Q&A) mode: hide lab-specific chrome, keep only the
+           question header and the Back button */
+        .lab-view.non-lab-mode .lab-tasks,
+        .lab-view.non-lab-mode .btn-hint,
+        .lab-view.non-lab-mode .btn-check {
+            display: none;
+        }
+
         /* ==================== WELCOME VIEW ==================== */
         .welcome-view {
             flex: 1;
@@ -555,12 +601,90 @@
 
         .terminal-view.active {
             display: flex;
+            flex-direction: column;
+        }
+
+        /* ==================== ANSWER VIEW (non-lab questions) ==================== */
+        .answer-view {
+            flex: 1;
+            display: none;
+            flex-direction: column;
+            overflow-y: auto;
+            padding: 25px;
+            background-color: #121212;
+        }
+
+        .answer-view.active {
+            display: flex;
+        }
+
+        .answer-view .answer-label {
+            color: #888;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .btn-reveal-answer {
+            align-self: flex-start;
+            margin-bottom: 15px;
+            background-color: #ffc107;
+            color: #000;
+        }
+        .btn-reveal-answer:hover { background-color: #e0a800; }
+
+        .answer-view .answer-text {
+            color: #eaeaea;
+            font-size: 1em;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        /* Tab bar - always shown while a lab/terminal is active (terminal tab(s) + video tab) */
+        .terminal-tabs {
+            display: none;
+            flex-shrink: 0;
+            background-color: #1a1a1a;
+            border-bottom: 2px solid #cc0000;
+            overflow-x: auto;
+        }
+
+        .terminal-tabs.show {
+            display: flex;
+        }
+
+        .terminal-tab {
+            padding: 10px 16px;
+            color: #bbb;
+            background-color: #1a1a1a;
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 600;
+            border-right: 1px solid #333;
+            white-space: nowrap;
+        }
+
+        .terminal-tab:hover {
+            background-color: #282424;
+            color: #fff;
+        }
+
+        .terminal-tab.active {
+            background-color: #282424;
+            color: #fff;
+            box-shadow: inset 0 -2px 0 #cc0000;
         }
 
         .terminal-view iframe {
             width: 100%;
-            height: 100%;
+            flex: 1;
             border: none;
+            display: none;
+        }
+
+        .terminal-view iframe.active {
+            display: block;
         }
 
         /* ==================== LOADING ==================== */
@@ -761,7 +885,13 @@
             <img src="https://github.com/RHCSA/RHCSA.github.io/blob/main/photos/redhat.png?raw=true" alt="Red Hat Logo" class="header-logo">
             <h1>Red Hat Certified System Administrator (RHCSA) EX200 Exam Simulator</h1>
         </div>
-        <a href="#" onclick="openWebsites(); return false;" class="header-link">WWW.RHCSA.GITHUB.IO</a>
+        <div class="header-right">
+            <button class="version-badge" onclick="checkVersionManual()" title="Check for updates">
+                <span class="version-badge-label">Version:</span>
+                <span class="version-badge-value" id="versionBadgeValue">...</span>
+            </button>
+            <a href="#" onclick="openWebsites(); return false;" class="header-link">WWW.RHCSA.GITHUB.IO</a>
+        </div>
     </div>
 
     <!-- Main Container -->
@@ -790,7 +920,7 @@
                 
                 <!-- Fixed Control Buttons -->
                 <div class="lab-controls" id="labControls">
-                    <button class="lab-btn btn-back" id="backBtn" onclick="exitLab()">
+                    <button class="lab-btn btn-back" id="backBtn" onclick="handleBackClick()">
                         <svg viewBox="0 0 24 24" fill="currentColor">
                             <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
                         </svg>
@@ -841,7 +971,16 @@
 
             <!-- Terminal View (Full Panel when Lab Active) -->
             <div class="terminal-view" id="terminalView">
+                <div class="terminal-tabs" id="terminalTabs"></div>
                 <iframe id="terminalFrame" src=""></iframe>
+                <iframe id="videoFrame" class="video-frame" src="" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+            </div>
+
+            <!-- Answer View (Full Panel for non-lab, plain Q&A questions) -->
+            <div class="answer-view" id="answerView">
+                <div class="answer-label">Answer</div>
+                <button class="lab-btn btn-reveal-answer" id="revealAnswerBtn" onclick="revealAnswer()">Show Answer</button>
+                <div class="answer-text" id="answerText"></div>
             </div>
         </div>
     </div>
@@ -862,6 +1001,7 @@
         let hintVisible = false;
         let labHints = [];  // Stores hint data for each task
         let allTasksComplete = false;
+        let questionsData = {};  // Cached question metadata (incl. answer/is_lab), keyed by file
 
         // SVG Icons
         const icons = {
@@ -904,10 +1044,112 @@
                         document.getElementById('installedVersion').textContent = data.installed || 'unknown';
                         document.getElementById('latestVersion').textContent = data.latest || 'unknown';
                         document.getElementById('updateModal').classList.add('show');
+                    } else if (data.error || data.message) {
+                        // Check ran but couldn't determine update status (offline, rate-limited, etc.)
+                        console.warn('Version check did not complete:', data.error || data.message);
                     }
                 }
             } catch (e) {
                 console.log('Version check skipped:', e.message);
+            }
+        }
+
+        // Populate the header version badge (local file only, no network call)
+        async function loadInstalledVersion() {
+            try {
+                const response = await fetch(`${API_BASE}/version/installed`);
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('versionBadgeValue').textContent = data.installed || 'unknown';
+                }
+            } catch (e) {
+                document.getElementById('versionBadgeValue').textContent = 'unknown';
+            }
+        }
+
+        // Manually triggered from the header badge - checks now and shows the result
+        async function checkVersionManual() {
+            document.getElementById('updateModal').innerHTML = `
+                <div class="update-modal">
+                    <div class="update-modal-icon">🔄</div>
+                    <h2>Checking for Updates...</h2>
+                    <p style="color: #888;">Please wait...</p>
+                </div>
+            `;
+            document.getElementById('updateModal').classList.add('show');
+
+            try {
+                const response = await fetch(`${API_BASE}/version/check`);
+                const data = await response.json();
+
+                if (data.updateAvailable) {
+                    updateAvailable = true;
+                    document.getElementById('updateModal').innerHTML = `
+                        <div class="update-modal">
+                            <div class="update-modal-icon">🔄</div>
+                            <h2>Update Available!</h2>
+                            <p>A new version of RHCSA Exam Simulator is available.</p>
+                            <div class="update-version-info">
+                                <div class="version-row">
+                                    <span class="label">Installed:</span>
+                                    <span class="installed">${data.installed || 'unknown'}</span>
+                                </div>
+                                <div class="version-row">
+                                    <span class="label">Latest:</span>
+                                    <span class="latest">${data.latest || 'unknown'}</span>
+                                </div>
+                            </div>
+                            <p style="font-size: 0.85em; color: #888;">Update includes bug fixes and new features.</p>
+                            <div class="update-modal-buttons">
+                                <button class="btn-update-later" onclick="dismissUpdate()">Later</button>
+                                <button class="btn-update-now" onclick="runUpdate()">Update Now</button>
+                            </div>
+                        </div>
+                    `;
+                } else if (data.error || data.message) {
+                    // Check ran but couldn't determine status (offline, rate-limited, etc.) -
+                    // don't claim "up to date" when we actually don't know.
+                    document.getElementById('updateModal').innerHTML = `
+                        <div class="update-modal">
+                            <div class="update-modal-icon">⚠️</div>
+                            <h2>Could Not Check for Updates</h2>
+                            <p>${data.error || data.message}</p>
+                            <p style="font-size: 0.85em; color: #888;">Make sure this machine has internet access, then try again.</p>
+                            <div class="update-modal-buttons">
+                                <button class="btn-update-later" onclick="dismissUpdate()">Close</button>
+                                <button class="btn-update-now" onclick="checkVersionManual()">Try Again</button>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    document.getElementById('updateModal').innerHTML = `
+                        <div class="update-modal">
+                            <div class="update-modal-icon">✅</div>
+                            <h2>You're Up to Date!</h2>
+                            <p>You already have the latest version installed.</p>
+                            <div class="update-version-info">
+                                <div class="version-row">
+                                    <span class="label">Version:</span>
+                                    <span class="installed">${data.installed || 'unknown'}</span>
+                                </div>
+                            </div>
+                            <div class="update-modal-buttons">
+                                <button class="btn-update-later" onclick="dismissUpdate()">Close</button>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (e) {
+                document.getElementById('updateModal').innerHTML = `
+                    <div class="update-modal">
+                        <div class="update-modal-icon">❌</div>
+                        <h2>Check Failed</h2>
+                        <p>Could not check for updates.</p>
+                        <div class="update-modal-buttons">
+                            <button class="btn-update-later" onclick="dismissUpdate()">Close</button>
+                        </div>
+                    </div>
+                `;
             }
         }
 
@@ -934,15 +1176,13 @@
                 if (data.success) {
                     document.getElementById('updateModal').innerHTML = `
                         <div class="update-modal">
-                            <div class="update-modal-icon">✅</div>
-                            <h2>Update Complete!</h2>
-                            <p>The simulator has been updated successfully.</p>
-                            <p style="color: #4caf50;">Please refresh the page to use the new version.</p>
-                            <div class="update-modal-buttons">
-                                <button class="btn-update-now" onclick="location.reload()">Refresh Now</button>
-                            </div>
+                            <div class="update-modal-icon">⏳</div>
+                            <h2>Update Running...</h2>
+                            <p>The update is installing in the background and will restart the server.</p>
+                            <p style="color: #888;">This page will reload automatically when it's ready...</p>
                         </div>
                     `;
+                    waitForServerRestart();
                 } else {
                     document.getElementById('updateModal').innerHTML = `
                         <div class="update-modal">
@@ -970,6 +1210,47 @@
             }
         }
 
+        // Poll until the web server comes back up (it restarts partway through
+        // the update), then reload so the browser picks up the new version.
+        function waitForServerRestart() {
+            let sawDown = false;
+            const maxAttempts = 120; // ~10 minutes at 5s each
+            let attempts = 0;
+
+            const poll = async () => {
+                attempts++;
+                try {
+                    const response = await fetch(`${API_BASE}/objectives`, { cache: 'no-store' });
+                    if (response.ok) {
+                        if (sawDown) {
+                            location.reload();
+                            return;
+                        }
+                        // Server never actually went down yet (restart hasn't happened) - keep polling.
+                    }
+                } catch (e) {
+                    sawDown = true;
+                }
+                if (attempts < maxAttempts) {
+                    setTimeout(poll, 5000);
+                } else {
+                    document.getElementById('updateModal').innerHTML = `
+                        <div class="update-modal">
+                            <div class="update-modal-icon">⚠️</div>
+                            <h2>Taking longer than expected</h2>
+                            <p>Please refresh the page manually in a minute.</p>
+                            <div class="update-modal-buttons">
+                                <button class="btn-update-now" onclick="location.reload()">Refresh Now</button>
+                            </div>
+                        </div>
+                    `;
+                }
+            };
+
+            setTimeout(poll, 3000);
+        }
+
+
         // Open both websites
         function openWebsites() {
             // Open first window immediately
@@ -981,10 +1262,14 @@
         }
 
         // Initialize
-        document.addEventListener('DOMContentLoaded', () => {
-            loadObjectives();
-            loadCompletedLabs();
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Load completion state first so every objective/question is
+            // rendered with the correct status right away, instead of
+            // showing "incomplete" until a later refresh updates it
+            await loadCompletedLabs();
+            await loadObjectives();
             initResizer();
+            loadInstalledVersion();
             // Check for updates (non-blocking)
             checkForUpdate();
         });
@@ -1006,7 +1291,9 @@
             try {
                 const response = await fetch(`${API_BASE}/questions/${objId}`);
                 if (response.ok) {
-                    return await response.json();
+                    const data = await response.json();
+                    data.forEach(q => { questionsData[q.file] = q; });
+                    return data;
                 }
             } catch (e) {
                 console.error('Error fetching questions:', e);
@@ -1120,6 +1407,32 @@
 
         // Select a question/lab
         async function selectQuestion(objId, idx, file) {
+            const qData = questionsData[file];
+            if (qData && qData.is_lab === false) {
+                // Clean up any previous real lab first. Normally unreachable
+                // since the menu is hidden while a lab is active, but this is
+                // a cheap safety net against leaving a container/tmux window
+                // running if this is ever invoked in an unexpected state.
+                if (currentLab) {
+                    try {
+                        await fetch(`${API_BASE}/lab/exit`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                objective: currentLab.objId,
+                                index: currentLab.idx,
+                                file: currentLab.file
+                            })
+                        });
+                    } catch (e) {
+                        console.warn('Failed to cleanup previous lab:', e);
+                    }
+                    currentLab = null;
+                }
+                showAnswerInterface(qData, objId, file);
+                return;
+            }
+
             showLoading();
             
             try {
@@ -1149,6 +1462,14 @@
                 
                 if (response.ok) {
                     const labData = await response.json();
+                    
+                    if (labData.error === 'prerequisite_failed') {
+                        // Requirements not met (web UI only check) - stay on the menu
+                        alert(labData.message || 'This lab requires something that is not available on this machine.');
+                        hideLoading();
+                        return;
+                    }
+                    
                     currentLab = { objId, idx, file, ...labData };
                     
                     // Also fetch hints
@@ -1196,10 +1517,12 @@
             // Switch left panel from menu to lab view
             document.getElementById('menuView').classList.add('hidden');
             document.getElementById('labView').classList.add('active');
+            document.getElementById('labView').classList.remove('non-lab-mode');
             
             // Switch right panel from welcome to terminal
             document.getElementById('welcomeView').classList.add('hidden');
             document.getElementById('terminalView').classList.add('active');
+            document.getElementById('answerView').classList.remove('active');
             
             // Populate lab content
             document.getElementById('labQuestion').textContent = labData.question;
@@ -1251,7 +1574,83 @@
             // Load terminal
             const terminalFrame = document.getElementById('terminalFrame');
             terminalFrame.src = `http://${window.location.hostname}:${TERMINAL_PORT}`;
+
+            // Load the practice video in the background (muted) so it's ready to play
+            // as soon as the student switches to the video tab.
+            const videoFrame = document.getElementById('videoFrame');
+            videoFrame.src = getYoutubeEmbedUrl(labData.youtube_video);
+            videoFrame.classList.remove('active');
+            terminalFrame.classList.add('active');
+
+            // Always show the terminal tab bar: terminal tab(s) + a video tab
+            renderTerminalTabs(labData.terminals);
         }
+
+        // Convert a YouTube "watch" or "youtu.be" URL into an autoplay+muted embed URL
+        function getYoutubeEmbedUrl(url) {
+            if (!url) return '';
+            let videoId = '';
+            const watchMatch = url.match(/[?&]v=([^&]+)/);
+            const shortMatch = url.match(/youtu\.be\/([^?&]+)/);
+            const embedMatch = url.match(/\/embed\/([^?&]+)/);
+            if (watchMatch) videoId = watchMatch[1];
+            else if (shortMatch) videoId = shortMatch[1];
+            else if (embedMatch) videoId = embedMatch[1];
+            if (!videoId) return '';
+            return `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1`;
+        }
+
+        // Build the terminal tab bar for the current lab: terminal tab(s) + a permanent video tab
+        function renderTerminalTabs(terminals) {
+            const tabsContainer = document.getElementById('terminalTabs');
+            tabsContainer.innerHTML = '';
+
+            (terminals || []).forEach((t, i) => {
+                const tab = document.createElement('div');
+                tab.className = 'terminal-tab' + (i === 0 ? ' active' : '');
+                tab.textContent = t.name;
+                tab.onclick = () => selectTerminalTab(tab, t.window);
+                tabsContainer.appendChild(tab);
+            });
+
+            // Permanent "Lab Video Practice" tab, present even for single-terminal labs
+            const videoTab = document.createElement('div');
+            videoTab.className = 'terminal-tab';
+            videoTab.textContent = 'Lab Video Practice';
+            videoTab.onclick = () => selectVideoTab(videoTab);
+            tabsContainer.appendChild(videoTab);
+
+            tabsContainer.classList.add('show');
+        }
+
+        // Switch the shared terminal view to a different tab (same machine, different tmux window)
+        async function selectTerminalTab(tabEl, windowName) {
+            document.querySelectorAll('.terminal-tab').forEach(el => el.classList.remove('active'));
+            tabEl.classList.add('active');
+
+            document.getElementById('videoFrame').classList.remove('active');
+            document.getElementById('terminalFrame').classList.add('active');
+
+            try {
+                await fetch(`${API_BASE}/terminal/select`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ window: windowName })
+                });
+            } catch (e) {
+                console.error('Failed to switch terminal tab:', e);
+            }
+        }
+
+        // Switch to the video tab: just toggle which iframe is visible, no terminal API call
+        function selectVideoTab(tabEl) {
+            document.querySelectorAll('.terminal-tab').forEach(el => el.classList.remove('active'));
+            tabEl.classList.add('active');
+
+            document.getElementById('terminalFrame').classList.remove('active');
+            document.getElementById('videoFrame').classList.add('active');
+        }
+
 
         // Check tasks
         async function checkTasks() {
@@ -1429,6 +1828,77 @@
             }
         }
 
+        // Show a plain question+answer view (non-lab questions) - no
+        // terminal, no prepare_lab/check_tasks calls at all
+        let currentAnswerFile = null;
+        let currentAnswerObjId = null;
+
+        function showAnswerInterface(qData, objId, file) {
+            document.getElementById('menuView').classList.add('hidden');
+            document.getElementById('labView').classList.add('active');
+            document.getElementById('labView').classList.add('non-lab-mode');
+
+            document.getElementById('welcomeView').classList.add('hidden');
+            document.getElementById('answerView').classList.add('active');
+
+            document.getElementById('labQuestion').textContent = qData.question;
+            document.getElementById('answerText').textContent = qData.answer || 'No answer provided yet.';
+
+            currentAnswerFile = file;
+            currentAnswerObjId = objId;
+
+            const btn = document.getElementById('revealAnswerBtn');
+            const text = document.getElementById('answerText');
+            if (file && completedLabs.has(file)) {
+                // Already revealed in a previous visit - just show it
+                btn.style.display = 'none';
+                text.style.display = 'block';
+            } else {
+                btn.style.display = 'flex';
+                text.style.display = 'none';
+            }
+        }
+
+        // Reveal the answer and mark this question as done
+        async function revealAnswer() {
+            document.getElementById('revealAnswerBtn').style.display = 'none';
+            document.getElementById('answerText').style.display = 'block';
+
+            if (!currentAnswerFile) return;
+            try {
+                await fetch(`${API_BASE}/question/mark_answered`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ objective: currentAnswerObjId, file: currentAnswerFile })
+                });
+                completedLabs.add(currentAnswerFile);
+                updateCompletionStatus();
+            } catch (e) {
+                console.error('Failed to mark question as answered:', e);
+            }
+        }
+
+        // Back button behavior for the plain-answer view (currentLab is
+        // never set for these, so exitLab() would just no-op if reused here)
+        function backToMenuFromAnswer() {
+            document.getElementById('labView').classList.remove('active');
+            document.getElementById('labView').classList.remove('non-lab-mode');
+            document.getElementById('menuView').classList.remove('hidden');
+
+            document.getElementById('answerView').classList.remove('active');
+            document.getElementById('welcomeView').classList.remove('hidden');
+        }
+
+        // The single Back button serves both real labs and plain-answer
+        // questions - dispatch based on which one is currently showing
+        function handleBackClick() {
+            if (currentLab) {
+                exitLab();
+            } else {
+                backToMenuFromAnswer();
+            }
+        }
+
         // Exit lab
         async function exitLab() {
             if (!currentLab) return;
@@ -1451,6 +1921,17 @@
             newIframe.id = 'terminalFrame';
             newIframe.src = '';
             parent.replaceChild(newIframe, terminalFrame);
+
+            // Stop the practice video too
+            const videoFrame = document.getElementById('videoFrame');
+            videoFrame.src = '';
+            videoFrame.classList.remove('active');
+
+            // Hide/clear terminal tabs
+            const tabsContainer = document.getElementById('terminalTabs');
+            tabsContainer.innerHTML = '';
+            tabsContainer.classList.remove('show');
+
             
             showLoading();
             

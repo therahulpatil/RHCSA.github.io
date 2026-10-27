@@ -15,12 +15,64 @@ import threading
 import signal
 
 # Configuration
-WEBUI_PORT = 8080
+WEBUI_PORT = 80
 TERMINAL_PORT = 7682
 TMUX_SESSION = 'rhcsa-terminal'
+MAIN_WINDOW_NAME = 'lab_main'  # stable tmux window name for the default/first terminal tab
 QUESTIONS_DIR = "/usr/local/share/rhcsa/questions"
 PROGRESS_FILE = "/usr/local/share/rhcsa/.progress"
 WEBUI_DIR = "/usr/local/share/rhcsa/webui"
+
+# Shared TASK_* helper functions every lab file relies on (get_task_description,
+# get_task_commands, _build_hint). The rhcsa CLI defines these once itself and
+# lab files inherit them for free when sourced from within it - but the web UI
+# sources lab files in their own isolated bash process, so we must provide the
+# exact same definitions here or these calls silently fail (empty output),
+# which then overwrites perfectly good static task text with blanks.
+TASK_HELPER_FUNCTIONS_BASH = '''
+get_task_description() {
+    local task_idx=$1
+    local task_num=$((task_idx + 1))
+    local var_name="TASK_${task_num}_QUESTION"
+    echo "${!var_name}"
+}
+
+get_task_commands() {
+    local task_idx=$1
+    local task_num=$((task_idx + 1))
+    local result=""
+    for i in 1 2 3 4 5; do
+        local var_name="TASK_${task_num}_COMMAND_${i}"
+        local cmd="${!var_name}"
+        if [[ -n "$cmd" ]]; then
+            if [[ -n "$result" ]]; then
+                result+=$'\\n'
+            fi
+            result+="$cmd"
+        fi
+    done
+    echo "$result"
+}
+
+_build_hint() {
+    local result=""
+    for ((i=0; i<LAB_TASK_COUNT; i++)); do
+        local task_num=$((i+1))
+        local cmds=$(get_task_commands $i)
+        if [[ -n "$cmds" ]]; then
+            while IFS= read -r cmd; do
+                if [[ -n "$cmd" ]]; then
+                    if [[ -n "$result" ]]; then
+                        result+=$'\\n'
+                    fi
+                    result+="Task ${task_num}: ${cmd}"
+                fi
+            done <<< "$cmds"
+        fi
+    done
+    echo "$result"
+}
+'''
 
 class RHCSAAPIHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler for RHCSA API"""
@@ -71,6 +123,10 @@ class RHCSAAPIHandler(SimpleHTTPRequestHandler):
             # Check for updates
             self.send_json(check_version())
         
+        elif path == '/api/version/installed':
+            # Currently installed version only (no network call, always fast)
+            self.send_json(get_installed_version())
+        
         else:
             self.send_error(404)
     
@@ -100,8 +156,16 @@ class RHCSAAPIHandler(SimpleHTTPRequestHandler):
             result = exit_lab(data)
             self.send_json(result)
         
+        elif path == '/api/question/mark_answered':
+            result = mark_question_answered(data)
+            self.send_json(result)
+        
         elif path == '/api/terminal/send':
             result = send_to_terminal(data)
+            self.send_json(result)
+        
+        elif path == '/api/terminal/select':
+            result = select_terminal(data)
             self.send_json(result)
         
         elif path == '/api/update/run':
@@ -115,17 +179,8 @@ class RHCSAAPIHandler(SimpleHTTPRequestHandler):
         """Send JSON response"""
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
         self.wfile.write(json.dumps(data).encode('utf-8'))
-    
-    def do_OPTIONS(self):
-        """Handle CORS preflight"""
-        self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.end_headers()
 
 
 def get_objectives():
@@ -147,6 +202,8 @@ def get_objectives():
 def get_questions(obj_id):
     """Get questions for an objective"""
     questions = []
+    if not re.fullmatch(r'[1-9][0-9]*', str(obj_id)):
+        return questions
     obj_dir = os.path.join(QUESTIONS_DIR, str(obj_id))
     
     if not os.path.isdir(obj_dir):
@@ -182,10 +239,20 @@ def parse_question_file(filepath):
         task_count_match = re.search(r'LAB_TASK_COUNT=(\d+)', content)
         task_count = int(task_count_match.group(1)) if task_count_match else 0
         
+        # Extract ANSWER (used by non-lab, plain Q&A questions only)
+        answer_match = re.search(r'ANSWER="([^"]*)"', content)
+        answer = answer_match.group(1) if answer_match else ""
+        
+        # Extract YOUTUBE_VIDEO (optional practice video link)
+        youtube_match = re.search(r'YOUTUBE_VIDEO="([^"]*)"', content)
+        youtube_video = youtube_match.group(1) if youtube_match else ""
+        
         return {
             'question': question,
             'is_lab': is_lab,
-            'task_count': task_count
+            'task_count': task_count,
+            'answer': answer,
+            'youtube_video': youtube_video
         }
     except Exception as e:
         print(f"Error parsing {filepath}: {e}")
@@ -207,19 +274,83 @@ def get_progress():
 
 
 def reset_terminal():
-    """Reset the terminal - clear screen and cd to /tmp"""
+    """Reset the terminal: drop any extra tabs from a previous lab, keep just the main one"""
     try:
+        # List existing windows (in index order) and keep only the first one
+        result = subprocess.run(
+            ['tmux', 'list-windows', '-t', TMUX_SESSION, '-F', '#{window_index}'],
+            capture_output=True, text=True
+        )
+        indices = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+        if indices:
+            keeper = indices[0]
+            for idx in indices[1:]:
+                subprocess.run(['tmux', 'kill-window', '-t', f'{TMUX_SESSION}:{idx}'], capture_output=True)
+            subprocess.run(
+                ['tmux', 'rename-window', '-t', f'{TMUX_SESSION}:{keeper}', MAIN_WINDOW_NAME],
+                capture_output=True
+            )
+
         # Send Ctrl+C to cancel any running command, then clear and cd to /tmp
         subprocess.run(
-            ['tmux', 'send-keys', '-t', TMUX_SESSION, 'C-c'],
+            ['tmux', 'send-keys', '-t', f'{TMUX_SESSION}:{MAIN_WINDOW_NAME}', 'C-c'],
             capture_output=True
         )
         subprocess.run(
-            ['tmux', 'send-keys', '-t', TMUX_SESSION, 'clear; cd /tmp', 'Enter'],
+            ['tmux', 'send-keys', '-t', f'{TMUX_SESSION}:{MAIN_WINDOW_NAME}', 'clear; cd /tmp', 'Enter'],
             capture_output=True
         )
     except Exception as e:
         print(f"Error resetting terminal: {e}")
+
+
+def create_extra_terminal(window_name, command=None):
+    """Create an additional tmux window (terminal tab) on the same machine.
+    If a command is given (e.g. 'docker exec -it <name> bash') it runs in that
+    window instead of a plain shell."""
+    try:
+        cmd = ['tmux', 'new-window', '-d', '-t', TMUX_SESSION, '-n', window_name, '-c', '/tmp']
+        if command:
+            cmd.append(command)
+        subprocess.run(cmd, capture_output=True)
+    except Exception as e:
+        print(f"Error creating terminal window {window_name}: {e}")
+
+
+def select_terminal(data):
+    """Switch the shared terminal view to a different tab (tmux window)"""
+    window = data.get('window', '')
+
+    if not window or not re.fullmatch(r'[A-Za-z0-9_-]+', window):
+        return {'error': 'Invalid window', 'success': False}
+
+    try:
+        result = subprocess.run(
+            ['tmux', 'select-window', '-t', f'{TMUX_SESSION}:{window}'],
+            capture_output=True
+        )
+        return {'success': result.returncode == 0}
+    except Exception as e:
+        return {'error': str(e), 'success': False}
+
+
+def resolve_lab_filepath(obj_id, filename):
+    """Validate obj_id/filename and return a safe path under QUESTIONS_DIR, or None"""
+    if not obj_id or not filename:
+        return None
+    if not re.fullmatch(r'[1-9][0-9]*', str(obj_id)):
+        return None
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+\.sh', filename):
+        return None
+
+    base = os.path.realpath(QUESTIONS_DIR)
+    filepath = os.path.realpath(os.path.join(QUESTIONS_DIR, str(obj_id), filename))
+
+    if os.path.commonpath([base, filepath]) != base:
+        return None
+
+    return filepath
 
 
 def start_lab(data):
@@ -228,12 +359,9 @@ def start_lab(data):
     idx = data.get('index')
     filename = data.get('file')
     
-    if not obj_id or filename is None:
-        return {'error': 'Missing parameters'}
+    filepath = resolve_lab_filepath(obj_id, filename)
     
-    filepath = os.path.join(QUESTIONS_DIR, str(obj_id), filename)
-    
-    if not os.path.exists(filepath):
+    if not filepath or not os.path.exists(filepath):
         return {'error': 'Lab file not found'}
     
     # Parse the lab file
@@ -242,13 +370,56 @@ def start_lab(data):
     if not lab_data:
         return {'error': 'Failed to parse lab file'}
     
+    # Web UI only: optional prerequisite check before touching anything on the machine
+    prereq_ok, prereq_message = check_lab_prerequisites(filepath)
+    if not prereq_ok:
+        return {
+            'error': 'prerequisite_failed',
+            'message': prereq_message or 'This lab requires something that is not available on this machine.'
+        }
+    
     # Reset terminal before starting new lab
     reset_terminal()
     
-    # Run prepare_lab
+    # Run prepare_lab (main/default terminal tab)
     run_lab_function(filepath, 'prepare_lab')
     
+    # Create and prepare any additional terminal tabs (prepare_lab_2, prepare_lab_3, ...)
+    for terminal in lab_data.get('terminals', [])[1:]:
+        create_extra_terminal(terminal['window'], terminal.get('command'))
+        run_lab_function(filepath, f"prepare_lab_{terminal['index']}")
+    
+    # Make sure the student lands on the main tab, regardless of how many tabs exist
+    subprocess.run(['tmux', 'select-window', '-t', f'{TMUX_SESSION}:{MAIN_WINDOW_NAME}'], capture_output=True)
+    
+    # Re-resolve any runtime-computed values (e.g. disk names) now that prepare_lab has run
+    resolve_dynamic_lab_data(filepath, lab_data)
+    
     return lab_data
+
+
+def parse_extra_terminals(content):
+    """Find prepare_lab_N (N>=2) functions in a lab file and their optional tab names.
+    Web UI only - the CLI simulator ignores these and only ever calls prepare_lab()."""
+    terminals = []
+    indices = sorted(set(int(m) for m in re.findall(r'\bprepare_lab_(\d+)\s*\(\)', content)))
+
+    for n in indices:
+        name_match = re.search(rf'PREPARE_LAB_{n}_NAME="([^"]*)"', content)
+        command_match = re.search(rf'PREPARE_LAB_{n}_COMMAND="([^"]*)"', content)
+        command = command_match.group(1) if command_match else None
+
+        if name_match:
+            name = name_match.group(1)
+        else:
+            # No explicit tab name: if this tab drops into a container, use the
+            # container name instead of a generic "Terminal N" label.
+            container_in_cmd = re.search(r'docker exec[^"]*?(\S+)\s+bash', command) if command else None
+            name = container_in_cmd.group(1) if container_in_cmd else f'Terminal {n}'
+
+        terminals.append({'index': n, 'name': name, 'window': f'lab_{n}', 'command': command})
+
+    return terminals
 
 
 def parse_lab_file(filepath):
@@ -264,6 +435,22 @@ def parse_lab_file(filepath):
         # Extract LAB_TASK_COUNT
         task_count_match = re.search(r'LAB_TASK_COUNT=(\d+)', content)
         task_count = int(task_count_match.group(1)) if task_count_match else 0
+        
+        # Extract YOUTUBE_VIDEO (optional practice video link, shown in its own tab)
+        youtube_match = re.search(r'YOUTUBE_VIDEO="([^"]*)"', content)
+        youtube_video = youtube_match.group(1) if youtube_match else ""
+        
+        # Extract optional extra terminal tabs (prepare_lab_2, prepare_lab_3, ...)
+        extra_terminals = parse_extra_terminals(content)
+        main_name_match = re.search(r'PREPARE_LAB_1_NAME="([^"]*)"', content)
+        if main_name_match:
+            main_name = main_name_match.group(1)
+        else:
+            # No explicit name for the main tab: label it with the container name
+            # if this lab redirects the main terminal into one, otherwise "localhost".
+            container_name_match = re.search(r'^CONTAINER_NAME="([^"]*)"', content, re.MULTILINE)
+            main_name = container_name_match.group(1) if container_name_match else 'localhost'
+        terminals = [{'index': 1, 'name': main_name, 'window': MAIN_WINDOW_NAME}] + extra_terminals
         
         # Extract tasks
         tasks = []
@@ -288,6 +475,7 @@ def parse_lab_file(filepath):
                 if cmd_match:
                     commands.append({
                         'task': i,
+                        'cmd_index': j,
                         'label': f'Task {i}' + (f' - Command {j}' if j > 1 else ''),
                         'hint': task_hint if j == 1 else '',  # Show hint only for first command of each task
                         'command': cmd_match.group(1)
@@ -297,7 +485,9 @@ def parse_lab_file(filepath):
             'question': question,
             'tasks': tasks,
             'task_count': task_count,
-            'commands': commands
+            'commands': commands,
+            'terminals': terminals,
+            'youtube_video': youtube_video
         }
     except Exception as e:
         print(f"Error parsing lab file {filepath}: {e}")
@@ -307,7 +497,7 @@ def parse_lab_file(filepath):
 def run_lab_function(filepath, function_name):
     """Run a function from a lab file"""
     try:
-        # Create a script that sources the lab file and runs the function
+        # filepath is passed as $1 (not interpolated) so it can't break out of the script
         script = f'''
 #!/bin/bash
 # Colors
@@ -315,12 +505,136 @@ RESET=$'\\e[0m'
 DIM="\\033[2m"
 GREEN="\\033[32m"
 
-source "{filepath}"
+{TASK_HELPER_FUNCTIONS_BASH}
+
+source "$1"
 {function_name}
 '''
-        subprocess.run(['bash', '-c', script], capture_output=True, timeout=30)
+        # 60s: prepare_lab for some labs runs a slow dnf install inside a
+        # container after already attaching the terminal to it - give that
+        # room to finish instead of getting silently killed mid-provision.
+        subprocess.run(['bash', '-c', script, 'bash', filepath], capture_output=True, timeout=60)
     except Exception as e:
         print(f"Error running {function_name}: {e}")
+
+
+def run_bash_capture(filepath, script_body, timeout=30):
+    """Source a lab file then run script_body, returning captured stdout (or '' on error)."""
+    script = f'''
+#!/bin/bash
+RESET=$'\\e[0m'
+DIM="\\033[2m"
+GREEN="\\033[32m"
+RED="\\033[31m"
+YELLOW="\\033[33m"
+
+{TASK_HELPER_FUNCTIONS_BASH}
+
+source "$1"
+{script_body}
+'''
+    try:
+        result = subprocess.run(['bash', '-c', script, 'bash', filepath],
+                                 capture_output=True, text=True, timeout=timeout)
+        return result.stdout
+    except Exception as e:
+        print(f"Error running bash capture for {filepath}: {e}")
+        return ''
+
+
+def check_lab_prerequisites(filepath):
+    """Run the lab's optional check_prerequisites() (web UI only).
+
+    A lab can define this to verify the machine has what it needs (e.g. spare
+    disks for an LVM lab) before prepare_lab ever runs. It should set
+    PREREQ_OK=true/false and, when false, PREREQ_MESSAGE explaining what's
+    missing. Labs that don't define check_prerequisites always pass - this is
+    a strictly additive, opt-in feature and doesn't affect existing labs.
+    """
+    script = '''
+if declare -f check_prerequisites > /dev/null; then
+    check_prerequisites
+    echo "RHCSA_PREREQ_OK:${PREREQ_OK:-true}"
+    echo "RHCSA_PREREQ_MSG_START"
+    echo "${PREREQ_MESSAGE:-}"
+    echo "RHCSA_PREREQ_MSG_END"
+else
+    echo "RHCSA_PREREQ_OK:true"
+fi
+'''
+    stdout = run_bash_capture(filepath, script, timeout=30)
+
+    ok = True
+    message_lines = []
+    capturing = False
+    for line in stdout.splitlines():
+        if line.startswith('RHCSA_PREREQ_OK:'):
+            ok = line.split(':', 1)[1].strip().lower() != 'false'
+        elif line == 'RHCSA_PREREQ_MSG_START':
+            capturing = True
+        elif line == 'RHCSA_PREREQ_MSG_END':
+            capturing = False
+        elif capturing:
+            message_lines.append(line)
+
+    return ok, '\n'.join(message_lines).strip()
+
+
+def resolve_dynamic_lab_data(filepath, lab_data):
+    """Re-resolve task text/commands after prepare_lab has run, so labs that
+    pick values at runtime (e.g. disk names) show the real values in the web
+    UI. No-op for ordinary labs: get_task_description()/TASK_i_COMMAND_j
+    already just echo back the same static string the regex parser found.
+    """
+    task_count = lab_data.get('task_count', 0)
+    commands = lab_data.get('commands', [])
+    if task_count <= 0 and not commands:
+        return
+
+    # Task text/commands can legitimately contain embedded newlines (e.g. a
+    # heredoc command). Since results are read back one bash-echoed line at a
+    # time, encode real newlines as a placeholder before echoing so a
+    # multi-line value doesn't get split across several unrelated lines and
+    # silently truncated to just its first line.
+    script_lines = []
+    for i in range(1, task_count + 1):
+        script_lines.append(
+            f'__d="$(get_task_description {i - 1} 2>/dev/null)"; '
+            f'echo "RHCSA_TASK_{i}:${{__d//$\'\\n\'/@@RHCSA_NL@@}}"'
+        )
+    for entry in commands:
+        i, j = entry['task'], entry['cmd_index']
+        script_lines.append(
+            f'__v="TASK_{i}_COMMAND_{j}"; __c="${{!__v}}"; '
+            f'echo "RHCSA_CMD_{i}_{j}:${{__c//$\'\\n\'/@@RHCSA_NL@@}}"'
+        )
+
+    stdout = run_bash_capture(filepath, '\n'.join(script_lines), timeout=15)
+
+    tasks = list(lab_data.get('tasks', []))
+    for line in stdout.splitlines():
+        m = re.match(r'^RHCSA_TASK_(\d+):(.*)$', line)
+        if m:
+            idx = int(m.group(1)) - 1
+            text = m.group(2).replace('@@RHCSA_NL@@', '\n')
+            # Never overwrite good static text with a blank - if the bash call
+            # produced nothing (missing helper function, etc.) keep what the
+            # regex parser already found instead of blanking the task out.
+            if 0 <= idx < len(tasks) and text:
+                tasks[idx] = text
+            continue
+        m = re.match(r'^RHCSA_CMD_(\d+)_(\d+):(.*)$', line)
+        if m:
+            ti, tj = int(m.group(1)), int(m.group(2))
+            val = m.group(3).replace('@@RHCSA_NL@@', '\n')
+            if not val:
+                continue
+            for entry in commands:
+                if entry['task'] == ti and entry['cmd_index'] == tj:
+                    entry['command'] = val
+                    break
+
+    lab_data['tasks'] = tasks
 
 
 def check_lab(data):
@@ -328,12 +642,9 @@ def check_lab(data):
     obj_id = data.get('objective')
     filename = data.get('file')
     
-    if not obj_id or not filename:
-        return {'error': 'Missing parameters'}
+    filepath = resolve_lab_filepath(obj_id, filename)
     
-    filepath = os.path.join(QUESTIONS_DIR, str(obj_id), filename)
-    
-    if not os.path.exists(filepath):
+    if not filepath or not os.path.exists(filepath):
         return {'error': 'Lab file not found'}
     
     # Get task count
@@ -358,17 +669,17 @@ def check_lab(data):
 def run_check_tasks(filepath, task_count):
     """Run check_tasks and return status array"""
     try:
-        # Create a script that sources the lab file, runs check_tasks, and outputs results
+        # filepath is passed as $1 (not interpolated) so it can't break out of the script
         script = f'''
 #!/bin/bash
 declare -a TASK_STATUS
-source "{filepath}"
+source "$1"
 check_tasks
 for ((i=0; i<{task_count}; i++)); do
     echo "${{TASK_STATUS[$i]}}"
 done
 '''
-        result = subprocess.run(['bash', '-c', script], capture_output=True, text=True, timeout=30)
+        result = subprocess.run(['bash', '-c', script, 'bash', filepath], capture_output=True, text=True, timeout=30)
         
         # Parse output
         lines = result.stdout.strip().split('\n')
@@ -406,22 +717,34 @@ def mark_lab_completed(filename):
         print(f"Error marking lab completed: {e}")
 
 
+def mark_question_answered(data):
+    """Mark a plain (non-lab) question as answered/viewed - reveal-answer
+    click handler on the web UI. Reuses the same progress file as labs."""
+    filename = data.get('file')
+    if not filename or not re.fullmatch(r'[A-Za-z0-9_.-]+\.sh', filename):
+        return {'success': False, 'error': 'Invalid file'}
+    mark_lab_completed(filename)
+    return {'success': True}
+
+
 def get_hint(data):
     """Get hint for a lab"""
     obj_id = data.get('objective')
     filename = data.get('file')
     
-    if not obj_id or not filename:
-        return {'error': 'Missing parameters', 'commands': []}
+    filepath = resolve_lab_filepath(obj_id, filename)
     
-    filepath = os.path.join(QUESTIONS_DIR, str(obj_id), filename)
-    
-    if not os.path.exists(filepath):
+    if not filepath or not os.path.exists(filepath):
         return {'error': 'Lab file not found', 'commands': []}
     
     lab_data = parse_lab_file(filepath)
+    if not lab_data:
+        return {'commands': []}
     
-    return {'commands': lab_data.get('commands', []) if lab_data else []}
+    # Re-resolve any runtime-computed values (e.g. disk names chosen in prepare_lab)
+    resolve_dynamic_lab_data(filepath, lab_data)
+    
+    return {'commands': lab_data.get('commands', [])}
 
 
 def exit_lab(data):
@@ -429,12 +752,9 @@ def exit_lab(data):
     obj_id = data.get('objective')
     filename = data.get('file')
     
-    if not obj_id or not filename:
-        return {'error': 'Missing parameters'}
+    filepath = resolve_lab_filepath(obj_id, filename)
     
-    filepath = os.path.join(QUESTIONS_DIR, str(obj_id), filename)
-    
-    if os.path.exists(filepath):
+    if filepath and os.path.exists(filepath):
         run_lab_function(filepath, 'cleanup_lab')
     
     return {'success': True}
@@ -484,15 +804,38 @@ def send_to_terminal(data):
 
 # Version check configuration
 VERSION_FILE = "/usr/local/share/rhcsa/.version"
-GITHUB_REPO_API = "https://api.github.com/repos/RHCSA/RHCSA.github.io/commits/main"
+GITHUB_COMMITS_API = "https://api.github.com/repos/RHCSA/RHCSA.github.io/commits?sha=main&per_page=1"
 INSTALLER_URL = "https://raw.githubusercontent.com/RHCSA/RHCSA.github.io/main/Install_RHCSA_EX200_Exam_Simulator.sh"
+
+
+def get_installed_version():
+    """Currently installed version only - reads the local file, no network call"""
+    if os.path.exists(VERSION_FILE):
+        with open(VERSION_FILE, 'r') as f:
+            installed = f.read().strip()
+        if installed:
+            return {'installed': installed, 'installedFull': installed}
+    return {'installed': 'unknown', 'installedFull': ''}
+
+
+def get_latest_commit_count():
+    """Total number of commits on main - a simple incrementing version number.
+    Read from the Link response header's rel="last" page number (per_page=1
+    means each page is exactly one commit, so the last page number == total count)."""
+    import urllib.request
+
+    req = urllib.request.Request(GITHUB_COMMITS_API, headers={'User-Agent': 'RHCSA-Simulator'})
+    with urllib.request.urlopen(req, timeout=5) as response:
+        link = response.headers.get('Link', '')
+        response.read()  # drain the body
+
+    match = re.search(r'page=(\d+)>;\s*rel="last"', link)
+    return match.group(1) if match else None
 
 
 def check_version():
     """Check if an update is available"""
     try:
-        import urllib.request
-        
         # Read installed version
         installed = None
         if os.path.exists(VERSION_FILE):
@@ -500,15 +843,14 @@ def check_version():
                 installed = f.read().strip()
         
         if not installed:
+            print("check_version: version file not found or empty")
             return {'updateAvailable': False, 'message': 'Version file not found'}
         
-        # Fetch latest version from GitHub
-        req = urllib.request.Request(GITHUB_REPO_API, headers={'User-Agent': 'RHCSA-Simulator'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            latest = data.get('sha', '')
+        # Fetch latest version (commit count) from GitHub
+        latest = get_latest_commit_count()
         
         if not latest:
+            print("check_version: GitHub API response had no Link/last page")
             return {'updateAvailable': False, 'message': 'Could not fetch latest version'}
         
         # Compare versions
@@ -516,41 +858,55 @@ def check_version():
         
         return {
             'updateAvailable': update_available,
-            'installed': installed[:7] if installed else 'unknown',
-            'latest': latest[:7] if latest else 'unknown',
+            'installed': installed,
+            'latest': latest,
             'installedFull': installed,
             'latestFull': latest
         }
     except Exception as e:
+        print(f"check_version failed: {e}")
         return {'updateAvailable': False, 'error': str(e)}
 
 
+
 def run_update():
-    """Run the installer to update"""
+    """Kick off the installer in the background and return immediately.
+
+    The installer's own `systemctl restart rhcsa-webui` step kills this
+    service's whole cgroup (default KillMode=control-group), which would
+    otherwise kill the installer itself mid-run if it were a normal child of
+    this request (that's what caused the old synchronous version to always
+    report "Update Failed" - the process died before it could respond, even
+    though the update kept working in the background). Running it via
+    `systemd-run --scope` puts it in its own cgroup so it survives that
+    restart, and not blocking here keeps the single-threaded web server able
+    to answer the frontend's status-polling requests while it runs.
+    """
+    tmp_installer = '/tmp/rhcsa_webui_update.sh'
+    log_file = '/tmp/rhcsa_webui_update.log'
+    install_cmd = (
+        f'curl -sL {INSTALLER_URL} -o {tmp_installer} && '
+        f'chmod +x {tmp_installer} && {tmp_installer} --force; '
+        f'rm -f {tmp_installer}'
+    )
+
     try:
-        # Download installer to temp file and run with --force flag
-        tmp_installer = '/tmp/rhcsa_webui_update.sh'
-        result = subprocess.run(
-            ['bash', '-c', f'curl -sL {INSTALLER_URL} -o {tmp_installer} && chmod +x {tmp_installer} && {tmp_installer} --force'],
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 minute timeout
+        subprocess.run(['systemd-run', '--version'], capture_output=True, check=True)
+        subprocess.Popen(
+            ['systemd-run', '--scope', '--unit=rhcsa-webui-update', '--collect',
+             'bash', '-c', f'{install_cmd} > {log_file} 2>&1'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
-        
-        # Cleanup temp file
-        try:
-            os.remove(tmp_installer)
-        except:
-            pass
-        
-        if result.returncode == 0:
-            return {'success': True, 'message': 'Update completed successfully'}
-        else:
-            return {'success': False, 'error': result.stderr or 'Update failed'}
-    except subprocess.TimeoutExpired:
-        return {'success': False, 'error': 'Update timed out'}
-    except Exception as e:
-        return {'success': False, 'error': str(e)}
+    except Exception:
+        # Not running under systemd (or systemd-run missing) - best effort:
+        # detach into its own session so it isn't tied to this request at least.
+        subprocess.Popen(
+            ['bash', '-c', f'{install_cmd} > {log_file} 2>&1'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True
+        )
+
+    return {'success': True, 'started': True}
+
 
 
 def start_ttyd():

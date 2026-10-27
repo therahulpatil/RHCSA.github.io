@@ -7,6 +7,7 @@ IS_LAB=true
 LAB_ID="hostname"
 
 QUESTION="Set the system hostname to server1.rhcsa.github.io"
+YOUTUBE_VIDEO="https://www.youtube.com/watch?v=Me6Y12-sux8"
 
 # Lab configuration
 LAB_TASK_COUNT=2
@@ -72,7 +73,7 @@ check_tasks() {
 # Cleanup the lab environment before exit
 cleanup_lab() {
     local target_hostname="server1.rhcsa.github.io"
-    local original_hostname="exam_simulator.rhcsa@github.io"
+    local original_hostname="localhost.localdomain"
     
     echo -e "  ${DIM}• Cleaning up lab environment...${RESET}"
     
