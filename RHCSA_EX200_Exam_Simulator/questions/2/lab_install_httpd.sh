@@ -53,3 +53,10 @@ check_tasks() {
         TASK_STATUS[1]="false"
     fi
 }
+
+cleanup_lab() {
+    echo -e "  ${DIM}• Cleaning up lab environment...${RESET}"
+    dnf remove -y httpd >/dev/null 2>&1
+    echo -e "  ${GREEN}✓ Lab environment cleaned up${RESET}"
+    sleep 1
+}

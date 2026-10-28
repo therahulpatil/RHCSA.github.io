@@ -20,16 +20,16 @@ This is an **open source project** and we need your help! Currently, only **Chap
 
 | Chapter | Topic | Status |
 |---------|-------|--------|
-| 1 | Understand and use essential tools | ✅ Complete (75+ labs) |
-| 2 | Manage software | ❌ Needs questions |
-| 3 | Create simple shell scripts | ❌ Needs questions |
-| 4 | Operate running systems | ❌ Needs questions |
+| 1 | Understand and use essential tools | ✅ Complete (80+ labs) |
+| 2 | Manage software | 🔄 In Progress (Active Labs Added) |
+| 3 | Create simple shell scripts | 🔄 In Progress (Active Labs Added) |
+| 4 | Operate running systems | 🔄 In Progress (Active Labs Added) |
 | 5 | Configure local storage | ❌ Needs questions |
 | 6 | Create and configure file systems | ❌ Needs questions |
 | 7 | Deploy, configure, and maintain systems | ❌ Needs questions |
-| 8 | Manage basic networking | ❌ Needs questions |
-| 9 | Manage users and groups | ❌ Needs questions |
-| 10 | Manage security | ❌ Needs questions |
+| 8 | Manage basic networking | 🔄 In Progress (Active Labs Added) |
+| 9 | Manage users and groups | 🔄 In Progress (Active Labs Added) |
+| 10 | Manage security | 🔄 In Progress (Active Labs Added) |
 
 ---
 

@@ -129,7 +129,7 @@ check_for_update() {
 check_for_update
 
 # Step 1: Check internet connectivity
-echo -e "  ${YELLOW}[1/5]${NC} Checking internet connectivity..."
+echo -e "  ${YELLOW}[1/8]${NC} Checking internet connectivity..."
 if ! ping -c 1 github.com &>/dev/null && ! curl -sI https://github.com &>/dev/null; then
     echo -e "        ${RED}✗ No internet connection detected${NC}"
     echo ""
@@ -149,7 +149,7 @@ fi
 echo -e "        ${GREEN}✓${NC} Internet connection available"
 
 # Step 2: Check for required tools
-echo -e "  ${YELLOW}[2/7]${NC} Checking requirements..."
+echo -e "  ${YELLOW}[2/8]${NC} Checking requirements..."
 if ! command -v curl &>/dev/null; then
     echo -e "        ${CYAN}Installing curl...${NC}"
     dnf install -y curl &>/dev/null || yum install -y curl &>/dev/null
@@ -195,7 +195,7 @@ fi
 echo -e "        ${GREEN}✓${NC} Requirements satisfied (curl, tmux, python3, ttyd, docker)"
 
 # Step 3: Create temp directory and download files
-echo -e "  ${YELLOW}[3/7]${NC} Downloading RHCSA Exam Simulator files..."
+echo -e "  ${YELLOW}[3/8]${NC} Downloading RHCSA Exam Simulator files..."
 mkdir -p "$TMP_DIR/RHCSA_EX200_Exam_Simulator/questions"
 mkdir -p "$TMP_DIR/RHCSA_EX200_Exam_Simulator/webui"
 
@@ -246,7 +246,7 @@ find "$TMP_DIR" -type f -empty -delete 2>/dev/null || true
 echo -e "        ${GREEN}✓${NC} All files downloaded"
 
 # Step 4: Install
-echo -e "  ${YELLOW}[4/7]${NC} Installing to ${INSTALL_DIR}..."
+echo -e "  ${YELLOW}[4/8]${NC} Installing to ${INSTALL_DIR}..."
 
 # Preserve progress file from previous installation
 PROGRESS_FILE="${INSTALL_DIR}/.progress"
@@ -285,12 +285,12 @@ find "$INSTALL_DIR/questions" -name "*.sh" -exec chmod +x {} \; 2>/dev/null || t
 echo -e "        ${GREEN}✓${NC} Files installed"
 
 # Step 5: Create command
-echo -e "  ${YELLOW}[5/7]${NC} Creating 'rhcsa' command..."
+echo -e "  ${YELLOW}[5/8]${NC} Creating 'rhcsa' command..."
 ln -sf "$INSTALL_DIR/rhcsa" "$BIN_LINK"
 echo -e "        ${GREEN}✓${NC} Command created"
 
 # Step 6: Configure firewall and SELinux
-echo -e "  ${YELLOW}[6/7]${NC} Configuring firewall and SELinux..."
+echo -e "  ${YELLOW}[6/8]${NC} Configuring firewall and SELinux..."
 WEBUI_PORT=80
 TERMINAL_PORT=7682
 
@@ -325,7 +325,7 @@ else
 fi
 
 # Step 7: Set up web interface service
-echo -e "  ${YELLOW}[7/7]${NC} Setting up Web Interface service..."
+echo -e "  ${YELLOW}[7/8]${NC} Setting up Web Interface service..."
 if [[ -f "$INSTALL_DIR/webui/rhcsa-webui.service" ]]; then
     cp "$INSTALL_DIR/webui/rhcsa-webui.service" /etc/systemd/system/
     systemctl daemon-reload
